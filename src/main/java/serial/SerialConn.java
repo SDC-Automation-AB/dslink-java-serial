@@ -403,7 +403,7 @@ public class SerialConn {
 			bytes = new byte[byteStrings.length + 2];
 			for (int i=0; i<byteStrings.length; i++) {
 				try {
-					byte b = Byte.parseByte(byteStrings[i], 16);
+					byte b = (byte) Integer.parseInt(byteStrings[i], 16);
 					bytes[i+1] = b;
 				} catch (Exception e) {
 					LOGGER.error("No charset, and message not a string of bytes in hex notation");
