@@ -3,6 +3,7 @@ package serial;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
@@ -30,8 +31,12 @@ import com.serotonin.io.serial.SerialUtils;
 public class SerialConn {
 	private static final Logger LOGGER = LoggerFactory.getLogger(SerialConn.class);
 	
+	private static final int BYTE_UNSPECIFIED = -256;
+	
 	private Node node;
 	private SerialLink link;
+	
+	private Node buffer;
 	
 	// Status node. Communicates whether the port is open or closed.
 	private Node statnode = null;
@@ -76,11 +81,20 @@ public class SerialConn {
 		makeEditAction();
 		makeRemoveAction();
 		
+		buffer = node.getChild("Buffer");
+		if (buffer == null) {
+		    buffer = node.createChild("Buffer").setValueType(ValueType.STRING).setValue(new Value("")).build();
+		}
+		makeClearBufferAction();
+		
 		connect();
 	}
 	
 	/* Parses a string representing a byte. */
 	private int parseCode(String s) {
+	    if (s.isEmpty()) {
+	        return BYTE_UNSPECIFIED;
+	    }
 		if (s.startsWith("0x")) {
 			try {
 				return Integer.parseInt(s.substring(2), 16);
@@ -95,14 +109,14 @@ public class SerialConn {
 		String charset = node.getAttribute("Charset").getString();
 		if ("None".equals(charset)) {
 			LOGGER.error("Failed to parse start or end code");
-			return 0;
+			return BYTE_UNSPECIFIED;
 		}
 		try {
 			return Byte.toUnsignedInt(s.getBytes(charset)[0]);
 		} catch (Exception e) {
 			LOGGER.error("Failed to parse start or end code");
 		}
-		return 0;
+		return BYTE_UNSPECIFIED;
 	}
 	
 	/* Open the serial port and set up actions which should be available while the
@@ -197,9 +211,11 @@ public class SerialConn {
 	/* Read and handle all available bytes from the serial port. */
 	private void readWhileAvailable() {
 		if (serialPort == null) return;
+		List<Byte> buf = new LinkedList<Byte>();
 		try {
 			while (serialPort.getInputStream().available() > 0) {
 				int b = serialPort.getInputStream().read();
+				buf.add((byte) b);
 				if (message == null) {
 					// 'message' is null, so we're between messages right now
 					if (b == startCode) {
@@ -221,28 +237,39 @@ public class SerialConn {
 			}
 		} catch (IOException e) {
 			LOGGER.debug("", e);
+		} finally {
+		    appendToBuffer(buf);
 		}
 	}
 	
 	/* Parse the finished message to a string and set the node's value to it. */
 	private void finishRead() {
-		String charset = node.getAttribute("Charset").getString();
-		String value;
-		if ("None".equals(charset)) {
-			// No charset, so display the message as a hex string.
-			value = bytesToHexString(message);
-		} else {
-			try {
-				// Decode the message according to our charset.
-				byte[] bytes = ArrayUtils.toPrimitive(message.toArray(new Byte[message.size()]));
-				value = new String(bytes, charset);
-			} catch (UnsupportedEncodingException e) {
-				// Decoding failed, so display the message as a hex string.
-				LOGGER.debug("" ,e);
-				value = bytesToHexString(message);
-			}
-		}
+		String value = bytesToString(message);
 		node.setValue(new Value(value));
+	}
+	
+	private void appendToBuffer(List<Byte> bytes) {
+	    String sofar = buffer.getValue().getString();
+	    String add = bytesToString(bytes);
+	    buffer.setValue(new Value(sofar + add));
+	}
+	
+	private String bytesToString(List<Byte> bytes) {
+	    String charset = node.getAttribute("Charset").getString();
+        if ("None".equals(charset)) {
+            // No charset, so display the message as a hex string.
+            return bytesToHexString(bytes);
+        } else {
+            try {
+                // Decode the message according to our charset.
+                byte[] byteArr = ArrayUtils.toPrimitive(bytes.toArray(new Byte[bytes.size()]));
+                return new String(byteArr, charset) + " ";
+            } catch (UnsupportedEncodingException e) {
+                // Decoding failed, so display the message as a hex string.
+                LOGGER.debug("" ,e);
+                return bytesToHexString(bytes);
+            }
+        }
 	}
 	
 	/* Constructs a hex string from a list of bytes. */
@@ -254,6 +281,22 @@ public class SerialConn {
 			result.append(" ");
 		}
 		return result.toString();
+	}
+	
+	private void makeClearBufferAction() {
+	    Action act = new Action(Permission.READ, new Handler<ActionResult>() {
+            @Override
+            public void handle(ActionResult event) {
+                clearBuffer();
+            }
+	    });
+	    Node anode = buffer.getChild("Clear");
+	    if (anode == null) buffer.createChild("Clear").setAction(act).build().setSerializable(false);
+	    else anode.setAction(act);
+	}
+	
+	private void clearBuffer() {
+	    buffer.setValue(new Value(""));
 	}
 	
 	/* Create the action that allows editing the connection's parameters. */
@@ -395,16 +438,19 @@ public class SerialConn {
 		int start = parseCode(event.getParameter("Start Code", ValueType.STRING).getString());
 		int end = parseCode(event.getParameter("End Code", ValueType.STRING).getString());
 		
+		int startLen = start == BYTE_UNSPECIFIED ? 0 : 1;
+		int endLen = start == BYTE_UNSPECIFIED ? 0 : 1;
+		
 		String charset = node.getAttribute("Charset").getString();
 		byte[] bytes;
 		if ("None".equals(charset)) {
 			// Parse the message as a hex string.
 			String[] byteStrings = msgStr.split("\\s+");
-			bytes = new byte[byteStrings.length + 2];
+			bytes = new byte[byteStrings.length + startLen + endLen];
 			for (int i=0; i<byteStrings.length; i++) {
 				try {
 					byte b = (byte) Integer.parseInt(byteStrings[i], 16);
-					bytes[i+1] = b;
+					bytes[i+startLen] = b;
 				} catch (Exception e) {
 					LOGGER.error("No charset, and message not a string of bytes in hex notation");
 					return;
@@ -414,15 +460,20 @@ public class SerialConn {
 			// Encode the message according to our charset.
 			try {
 				byte[] msgBytes = msgStr.getBytes(charset);
-				bytes = new byte[msgBytes.length + 2];
-				System.arraycopy(msgBytes, 0, bytes, 1, msgBytes.length);
+				bytes = new byte[msgBytes.length + startLen + endLen];
+				System.arraycopy(msgBytes, 0, bytes, startLen, msgBytes.length);
 			} catch (UnsupportedEncodingException e) {
 				LOGGER.debug("" ,e);
 				return;
 			}
 		}
-		bytes[0] = (byte) start;
-		bytes[bytes.length - 1] = (byte) end;
+		if (start != BYTE_UNSPECIFIED) {
+		    bytes[0] = (byte) start;
+		}
+		if (end != BYTE_UNSPECIFIED) {
+		    bytes[bytes.length - 1] = (byte) end;
+		}
+		
 		try {
 			serialPort.getOutputStream().write(bytes);
 			serialPort.getOutputStream().flush();
@@ -430,7 +481,4 @@ public class SerialConn {
 			LOGGER.debug("" , e);
 		}
 	}
-	
-	
-
 }
