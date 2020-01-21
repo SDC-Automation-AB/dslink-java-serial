@@ -10,6 +10,8 @@ The "Charset" specifies how the connection will parse incoming messages and enco
 
 The connection listens on its serial port as long as its node is subscribed to, and the node's value is always set to the last message recieved. Messages can be sent to the serial port using the "send message" action, which allows you to choose start and end codes different from those used for incoming messages.
 
+If the Start and End Codes aren't specified, then no messages will be recieved, and the node's value will not be updated. However, the node also has a "Buffer" child which stores all incoming bytes, (parsed according to specified charset or displayed in hex notation if charset is "None"), regardless of start/end codes. The buffer can be cleared with the "Clear" action.
+
 ## Modifying/Extending the DSLink
 
 This DSLink is partially intended as a template for DSLinks that use serial communication. 
