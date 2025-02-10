@@ -8,6 +8,13 @@ targetCompatibility = 1.7
 version = '0.0.5'
 
 repositories {
+    maven {
+        url 'https://repo.sdc-automation.se/releases'
+        credentials {
+            username = System.getenv("SDC_REPO_USER")
+            password = System.getenv("SDC_REPO_USER_TOKEN")
+        }
+    }
     mavenCentral()
     maven {
         url 'https://oss.sonatype.org/content/repositories/snapshots/'
